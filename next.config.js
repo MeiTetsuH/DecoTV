@@ -1,11 +1,9 @@
 /** @type {import('next').NextConfig} */
 
 const nextConfig = {
-  // 根据环境自动选择输出模式：Vercel自动处理，Docker使用standalone
+  // Docker 部署使用 standalone 模式；Vercel 由平台自动处理，无需 standalone
   // 本地开发时不使用 standalone 避免 Windows 符号链接权限问题
-  ...(process.env.VERCEL || process.env.DOCKER_BUILD
-    ? { output: 'standalone' }
-    : {}),
+  ...(process.env.DOCKER_BUILD ? { output: 'standalone' } : {}),
 
   reactStrictMode: false,
 
