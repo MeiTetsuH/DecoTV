@@ -410,12 +410,25 @@ function getUpstashRedisClient(): Redis {
   let client: Redis | undefined = (global as any)[globalKey];
 
   if (!client) {
-    const upstashUrl = process.env.UPSTASH_URL;
-    const upstashToken = process.env.UPSTASH_TOKEN;
+    // 兼容多种环境变量命名：
+    // 1. Vercel Upstash 集成自动注入: KV_REST_API_URL / KV_REST_API_TOKEN
+    // 2. Upstash 官方命名: UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN
+    // 3. DecoTV 自定义命名: UPSTASH_URL / UPSTASH_TOKEN
+    const upstashUrl =
+      process.env.KV_REST_API_URL ||
+      process.env.UPSTASH_REDIS_REST_URL ||
+      process.env.UPSTASH_URL;
+    const upstashToken =
+      process.env.KV_REST_API_TOKEN ||
+      process.env.UPSTASH_REDIS_REST_TOKEN ||
+      process.env.UPSTASH_TOKEN;
 
     if (!upstashUrl || !upstashToken) {
       throw new Error(
-        'UPSTASH_URL and UPSTASH_TOKEN env variables must be set',
+        'Upstash Redis 环境变量未设置。请配置以下任一组变量：' +
+          'KV_REST_API_URL + KV_REST_API_TOKEN（Vercel集成）、' +
+          'UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN、' +
+          '或 UPSTASH_URL + UPSTASH_TOKEN',
       );
     }
 

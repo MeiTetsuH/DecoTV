@@ -24,28 +24,41 @@ const STORAGE_TYPE =
 
 // 创建存储实例
 function createStorage(): IStorage {
-  switch (STORAGE_TYPE) {
-    case 'redis':
-      return new RedisStorage();
-    case 'upstash':
-      return new UpstashRedisStorage();
-    case 'kvrocks':
-      return new KvrocksStorage();
-    case 'localstorage':
-    default:
-      // 本地模式使用内存存储，让后端也能存储和读取配置
-      return new MemoryStorage();
+  try {
+    switch (STORAGE_TYPE) {
+      case 'redis':
+        return new RedisStorage();
+      case 'upstash':
+        return new UpstashRedisStorage();
+      case 'kvrocks':
+        return new KvrocksStorage();
+      case 'localstorage':
+      default:
+        // 本地模式使用内存存储，让后端也能存储和读取配置
+        return new MemoryStorage();
+    }
+  } catch (e) {
+    // 构建阶段可能缺少运行时环境变量（如 UPSTASH_URL），降级为内存存储
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[db] Failed to initialize ${STORAGE_TYPE} storage, falling back to MemoryStorage:`,
+      e instanceof Error ? e.message : e,
+    );
+    return new MemoryStorage();
   }
 }
 
-// 单例存储实例
-let storageInstance: IStorage | null = null;
-
+// 延迟初始化存储实例，避免在 Next.js 构建阶段因缺少运行时环境变量而报错
 function getStorage(): IStorage {
-  if (!storageInstance) {
-    storageInstance = createStorage();
+  const globalKey = Symbol.for('__DECOTV_STORAGE_INSTANCE__');
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let instance: IStorage | undefined = (globalThis as any)[globalKey];
+  if (!instance) {
+    instance = createStorage();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any)[globalKey] = instance;
   }
-  return storageInstance;
+  return instance;
 }
 
 // 工具函数：生成存储key
@@ -55,10 +68,9 @@ export function generateStorageKey(source: string, id: string): string {
 
 // 导出便捷方法
 export class DbManager {
-  private storage: IStorage;
-
-  constructor() {
-    this.storage = getStorage();
+  // 延迟获取 storage，避免在模块加载时就初始化数据库连接
+  private get storage(): IStorage {
+    return getStorage();
   }
 
   // 播放记录相关方法
