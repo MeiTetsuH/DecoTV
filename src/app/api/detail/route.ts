@@ -16,6 +16,7 @@ import {
 import { SearchResult } from '@/lib/types';
 
 export const runtime = 'nodejs';
+export const maxDuration = 30;
 
 export async function GET(request: NextRequest) {
   const authResult = verifyApiAuth(request);

@@ -13,6 +13,7 @@ import {
 } from '@/lib/ffmpeg-download';
 
 export const runtime = 'nodejs';
+export const maxDuration = 30;
 export const fetchCache = 'force-no-store';
 
 type StartActionPayload = {

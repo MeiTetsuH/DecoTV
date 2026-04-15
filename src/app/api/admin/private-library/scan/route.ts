@@ -9,6 +9,7 @@ import {
 } from '@/lib/private-library';
 
 export const runtime = 'nodejs';
+export const maxDuration = 30;
 
 interface ScanBody {
   connectorId?: string;

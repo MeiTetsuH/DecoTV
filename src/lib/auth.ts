@@ -4,7 +4,7 @@ import { NextRequest } from 'next/server';
 let cachedSecret: string | null | undefined;
 let warnedMissingSecret = false;
 
-// 统一获取鉴权密钥，Docker/开发环境缺失时给出警告，并在非生产环境提供安全性有限的后备值
+// 统一获取鉴权密钥，缺失时给出警告，并在非生产环境提供安全性有限的后备值
 export function getAuthSecret(): string | null {
   if (cachedSecret !== undefined) return cachedSecret;
 
@@ -14,11 +14,11 @@ export function getAuthSecret(): string | null {
     if (!warnedMissingSecret) {
       // eslint-disable-next-line no-console
       console.warn(
-        'WARNING: NEXTAUTH_SECRET/AUTH_SECRET is missing. Docker 部署请通过 -e AUTH_SECRET=... 注入，生成命令: openssl rand -base64 32',
+        'WARNING: NEXTAUTH_SECRET/AUTH_SECRET is missing. Vercel 部署请在 Settings → Environment Variables 中添加 AUTH_SECRET，生成命令: openssl rand -base64 32',
       );
       warnedMissingSecret = true;
     }
-    // 仅非生产环境提供后备，防止本地/Docker 开发直接 401
+    // 仅非生产环境提供后备，防止本地开发直接 401
     cachedSecret = isProd ? null : 'dev-fallback-secret-do-not-use-in-prod';
     return cachedSecret;
   }

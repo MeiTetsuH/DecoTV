@@ -1,9 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { AdminConfig } from './admin.types';
-import { KvrocksStorage } from './kvrocks.db';
 import { MemoryStorage } from './memory.db';
-import { RedisStorage } from './redis.db';
 import {
   Favorite,
   IStorage,
@@ -13,32 +11,26 @@ import {
 } from './types';
 import { UpstashRedisStorage } from './upstash.db';
 
-// storage type 常量: 'localstorage' | 'redis' | 'upstash'，默认 'localstorage'
+// storage type 常量: 'localstorage' | 'upstash'，默认 'localstorage'
 const STORAGE_TYPE =
   (process.env.NEXT_PUBLIC_STORAGE_TYPE as
     | 'localstorage'
-    | 'redis'
     | 'upstash'
-    | 'kvrocks'
     | undefined) || 'localstorage';
 
 // 创建存储实例
 function createStorage(): IStorage {
   try {
     switch (STORAGE_TYPE) {
-      case 'redis':
-        return new RedisStorage();
       case 'upstash':
         return new UpstashRedisStorage();
-      case 'kvrocks':
-        return new KvrocksStorage();
       case 'localstorage':
       default:
         // 本地模式使用内存存储，让后端也能存储和读取配置
         return new MemoryStorage();
     }
   } catch (e) {
-    // 构建阶段可能缺少运行时环境变量（如 UPSTASH_URL），降级为内存存储
+    // 构建阶段可能缺少运行时环境变量（如 KV_REST_API_URL），降级为内存存储
     // eslint-disable-next-line no-console
     console.warn(
       `[db] Failed to initialize ${STORAGE_TYPE} storage, falling back to MemoryStorage:`,
