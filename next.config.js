@@ -1,7 +1,6 @@
 /** @type {import('next').NextConfig} */
 
 const nextConfig = {
-
   reactStrictMode: false,
 
   // Next.js 16 使用 Turbopack，配置 SVG 加载

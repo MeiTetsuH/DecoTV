@@ -471,7 +471,10 @@ interface Window {
     DISABLE_YELLOW_FILTER?: boolean;
     CUSTOM_CATEGORIES?: unknown[];
     FLUID_SEARCH?: boolean;
+    SEARCH_RESULT_LOAD_MODE?: 'infinite' | 'pagination';
     PRIVATE_LIBRARY_ENABLED?: boolean;
+    AUTH_MODE?: 'password' | 'public';
+    PUBLIC_ALLOW_ADMIN?: boolean;
   };
 
   /**

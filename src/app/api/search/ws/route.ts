@@ -6,7 +6,13 @@ import { getAuthInfoFromCookie, verifyApiAuth } from '@/lib/auth';
 import { toSimplified } from '@/lib/chinese';
 import { getAvailableApiSites, getConfig } from '@/lib/config';
 import { searchFromApi } from '@/lib/downstream';
+import { rewriteEpisodesForAdFilterMany } from '@/lib/episode-rewriter';
 import { rankSearchResults } from '@/lib/search-ranking';
+import {
+  buildResolutionFilterFromSearchParams,
+  filterSearchResultsByResolution,
+  formatResolutionLabel,
+} from '@/lib/video-quality';
 import { yellowWords } from '@/lib/yellow';
 
 export const runtime = 'nodejs';
@@ -26,6 +32,7 @@ export async function GET(request: NextRequest) {
 
   const { searchParams } = new URL(request.url);
   const query = searchParams.get('q');
+  const resolutionFilter = buildResolutionFilterFromSearchParams(searchParams);
 
   if (!query) {
     return new Response(JSON.stringify({ error: '搜索关键词不能为空' }), {
@@ -89,6 +96,12 @@ export async function GET(request: NextRequest) {
         query,
         normalizedQuery,
         totalSources: apiSites.length,
+        resolutionFilter: resolutionFilter.minLevel
+          ? {
+              minResolution: formatResolutionLabel(resolutionFilter.minLevel),
+              strict: resolutionFilter.strict,
+            }
+          : null,
         timestamp: Date.now(),
       })}\n\n`;
 
@@ -163,15 +176,24 @@ export async function GET(request: NextRequest) {
             // 排序失败时保持过滤后的原始顺序
           }
 
+          filteredResults = filterSearchResultsByResolution(
+            filteredResults,
+            resolutionFilter,
+          );
+
           // 发送该源的搜索结果
           completedSources++;
 
           if (!streamClosed) {
+            const rewrittenResults = await rewriteEpisodesForAdFilterMany(
+              filteredResults,
+              request,
+            );
             const sourceEvent = `data: ${JSON.stringify({
               type: 'source_result',
               source: site.key,
               sourceName: site.name,
-              results: filteredResults,
+              results: rewrittenResults,
               timestamp: Date.now(),
             })}\n\n`;
 

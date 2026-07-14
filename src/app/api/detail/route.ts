@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getAuthInfoFromCookie, verifyApiAuth } from '@/lib/auth';
 import { getAvailableApiSites, getCacheTime } from '@/lib/config';
 import { getDetailFromApi } from '@/lib/downstream';
+import { rewriteEpisodesForAdFilter } from '@/lib/episode-rewriter';
 import {
   buildPrivateLibraryPosterUrl,
   formatPrivateLibrarySourceName,
@@ -88,7 +89,19 @@ export async function GET(request: NextRequest) {
             : '');
         const desc = hydratedTarget.overview || '';
 
-        const streamUrl = `/api/private-library/stream?connectorId=${encodeURIComponent(hydratedTarget.connectorId)}&sourceItemId=${encodeURIComponent(hydratedTarget.sourceItemId)}`;
+        const privateEpisodes =
+          hydratedTarget.episodeItems && hydratedTarget.episodeItems.length > 0
+            ? hydratedTarget.episodeItems
+            : [
+                {
+                  sourceItemId: hydratedTarget.sourceItemId,
+                  title: hydratedTarget.title,
+                },
+              ];
+        const streamUrls = privateEpisodes.map(
+          (episode) =>
+            `/api/private-library/stream?connectorId=${encodeURIComponent(hydratedTarget.connectorId)}&sourceItemId=${encodeURIComponent(episode.sourceItemId)}`,
+        );
         let privateAudioStreams: Awaited<
           ReturnType<typeof resolvePrivateLibraryAudioStreams>
         > = [];
@@ -105,8 +118,10 @@ export async function GET(request: NextRequest) {
           id: hydratedTarget.id,
           title,
           poster,
-          episodes: [streamUrl],
-          episodes_titles: [hydratedTarget.title],
+          episodes: streamUrls,
+          episodes_titles: privateEpisodes.map(
+            (episode) => episode.title || hydratedTarget.title,
+          ),
           source: 'private_library',
           source_name: formatPrivateLibrarySourceName(connector),
           class: '私人影库',
@@ -117,7 +132,8 @@ export async function GET(request: NextRequest) {
           tmdb_id: hydratedTarget.tmdbId,
           connector_id: hydratedTarget.connectorId,
           connector_type: hydratedTarget.connectorType,
-          source_item_id: hydratedTarget.sourceItemId,
+          source_item_id:
+            privateEpisodes[0]?.sourceItemId || hydratedTarget.sourceItemId,
           private_audio_streams: privateAudioStreams.map((stream) => ({
             index: stream.index,
             display_title: stream.displayTitle,
@@ -166,7 +182,9 @@ export async function GET(request: NextRequest) {
     const result = await getDetailFromApi(apiSite, id);
     const cacheTime = await getCacheTime();
 
-    return NextResponse.json(result, {
+    const finalResult = await rewriteEpisodesForAdFilter(result, request);
+
+    return NextResponse.json(finalResult, {
       headers: {
         'Cache-Control': `public, max-age=${cacheTime}, s-maxage=${cacheTime}`,
         'CDN-Cache-Control': `public, s-maxage=${cacheTime}`,

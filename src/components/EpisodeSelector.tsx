@@ -1,3 +1,4 @@
+import { ArrowDownNarrowWide, Gauge, RefreshCw, Wifi } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import React, {
   useCallback,
@@ -7,17 +8,94 @@ import React, {
   useState,
 } from 'react';
 
+import {
+  comparePlaybackMetrics,
+  getPlaybackEvidenceTier,
+  hasMeasuredMediaThroughput,
+  isVerifiedPlaybackResult,
+} from '@/lib/player/source-ranking';
 import { SearchResult } from '@/lib/types';
-import { getVideoResolutionFromM3u8 } from '@/lib/utils';
+import { type VideoSourceTestResult } from '@/lib/utils';
 
 import ExternalImage from '@/components/ExternalImage';
 
 // 定义视频信息类型
-interface VideoInfo {
-  quality: string;
-  loadSpeed: string;
-  pingTime: number;
-  hasError?: boolean; // 添加错误状态标识
+type VideoInfo = VideoSourceTestResult;
+type SourceSortMode = 'default' | 'latency';
+
+interface SourceSortItem {
+  source: SearchResult;
+  sourceKey: string;
+  originalIndex: number;
+  isCurrentSource: boolean;
+  isTesting: boolean;
+  videoInfo?: VideoInfo;
+}
+
+function hasMeasuredResult(videoInfo?: VideoInfo) {
+  return Boolean(
+    videoInfo && !videoInfo.hasError && getPlaybackEvidenceTier(videoInfo) < 4,
+  );
+}
+
+function getLatencySortBucket(
+  videoInfo: VideoInfo | undefined,
+  isTesting: boolean,
+) {
+  if (videoInfo) return getPlaybackEvidenceTier(videoInfo);
+  return isTesting ? 4 : 3;
+}
+
+function compareDefaultSourceOrder(a: SourceSortItem, b: SourceSortItem) {
+  if (a.isCurrentSource && !b.isCurrentSource) return -1;
+  if (!a.isCurrentSource && b.isCurrentSource) return 1;
+  return a.originalIndex - b.originalIndex;
+}
+
+function compareLatencyMetrics(a: SourceSortItem, b: SourceSortItem) {
+  const metricsDifference = comparePlaybackMetrics(a.videoInfo, b.videoInfo);
+  if (metricsDifference !== 0) return metricsDifference;
+
+  if (a.isCurrentSource && !b.isCurrentSource) return -1;
+  if (!a.isCurrentSource && b.isCurrentSource) return 1;
+
+  return a.originalIndex - b.originalIndex;
+}
+
+function compareLatencySourceOrder(a: SourceSortItem, b: SourceSortItem) {
+  const bucketDiff =
+    getLatencySortBucket(a.videoInfo, a.isTesting) -
+    getLatencySortBucket(b.videoInfo, b.isTesting);
+  if (bucketDiff !== 0) return bucketDiff;
+
+  if (hasMeasuredResult(a.videoInfo) && hasMeasuredResult(b.videoInfo)) {
+    return compareLatencyMetrics(a, b);
+  }
+
+  if (a.isCurrentSource && !b.isCurrentSource) return -1;
+  if (!a.isCurrentSource && b.isCurrentSource) return 1;
+
+  return a.originalIndex - b.originalIndex;
+}
+
+function formatResponseTime(ms: number) {
+  if (!Number.isFinite(ms) || ms <= 0) return '未测得';
+  return `${Math.round(ms)}ms`;
+}
+
+function getLatencyTextClassName(pingTime: number) {
+  if (pingTime <= 800) return 'text-green-600 dark:text-green-400';
+  if (pingTime <= 2500) return 'text-orange-600 dark:text-orange-400';
+  return 'text-red-600 dark:text-red-400';
+}
+
+function getSpeedTextClassName(speedKBps?: number) {
+  if (!speedKBps || !Number.isFinite(speedKBps) || speedKBps <= 0) {
+    return 'text-gray-500 dark:text-gray-400';
+  }
+  if (speedKBps >= 2048) return 'text-green-600 dark:text-green-400';
+  if (speedKBps >= 512) return 'text-sky-600 dark:text-sky-300';
+  return 'text-orange-600 dark:text-orange-400';
 }
 
 interface EpisodeSelectorProps {
@@ -40,8 +118,19 @@ interface EpisodeSelectorProps {
   availableSources?: SearchResult[];
   sourceSearchLoading?: boolean;
   sourceSearchError?: string | null;
-  /** 预计算的测速结果，避免重复测速 */
-  precomputedVideoInfo?: Map<string, VideoInfo>;
+  /** 当前集各播放源的统一测速结果 */
+  sourceVideoInfoMap?: Map<string, VideoInfo>;
+  /** 正在测速的播放源 key */
+  sourceTestingKeys?: Set<string>;
+  /** 自动/手动测速进度 */
+  sourceProbeProgress?: {
+    running: boolean;
+    mode: 'idle' | 'auto' | 'manual';
+    done: number;
+    total: number;
+  };
+  /** 手动重新测速全部源 */
+  onManualSpeedTest?: () => void | Promise<void>;
 }
 
 /**
@@ -60,31 +149,21 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
   availableSources = [],
   sourceSearchLoading = false,
   sourceSearchError = null,
-  precomputedVideoInfo,
+  sourceVideoInfoMap = new Map(),
+  sourceTestingKeys = new Set(),
+  sourceProbeProgress = {
+    running: false,
+    mode: 'idle',
+    done: 0,
+    total: 0,
+  },
+  onManualSpeedTest,
 }) => {
   const router = useRouter();
   const pageCount = Math.ceil(totalEpisodes / episodesPerPage);
 
-  // 存储每个源的视频信息
-  const [videoInfoMap, setVideoInfoMap] = useState<Map<string, VideoInfo>>(
-    new Map(),
-  );
-  const [attemptedSources, setAttemptedSources] = useState<Set<string>>(
-    new Set(),
-  );
-
-  // 使用 ref 来避免闭包问题
-  const attemptedSourcesRef = useRef<Set<string>>(new Set());
-  const videoInfoMapRef = useRef<Map<string, VideoInfo>>(new Map());
-
-  // 同步状态到 ref
-  useEffect(() => {
-    attemptedSourcesRef.current = attemptedSources;
-  }, [attemptedSources]);
-
-  useEffect(() => {
-    videoInfoMapRef.current = videoInfoMap;
-  }, [videoInfoMap]);
+  const [sourceSortMode, setSourceSortMode] =
+    useState<SourceSortMode>('default');
 
   // 主要的 tab 状态：'episodes' 或 'sources'
   // 当只有一集时默认展示 "换源"，并隐藏 "选集" 标签
@@ -107,116 +186,26 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
     return currentPage;
   }, [currentPage, descending, pageCount]);
 
-  // 获取视频信息的函数 - 移除 attemptedSources 依赖避免不必要的重新创建
-  const getVideoInfo = useCallback(async (source: SearchResult) => {
-    const sourceKey = `${source.source}-${source.id}`;
-
-    // 使用 ref 获取最新的状态，避免闭包问题
-    if (attemptedSourcesRef.current.has(sourceKey)) {
-      return;
-    }
-
-    // 获取第一集的URL
-    if (!source.episodes || source.episodes.length === 0) {
-      return;
-    }
-    const episodeUrl =
-      source.episodes.length > 1 ? source.episodes[1] : source.episodes[0];
-
-    // 标记为已尝试
-    setAttemptedSources((prev) => new Set(prev).add(sourceKey));
-
-    try {
-      const info = await getVideoResolutionFromM3u8(episodeUrl);
-      setVideoInfoMap((prev) => new Map(prev).set(sourceKey, info));
-    } catch {
-      // 失败时保存错误状态
-      setVideoInfoMap((prev) =>
-        new Map(prev).set(sourceKey, {
-          quality: '错误',
-          loadSpeed: '未知',
-          pingTime: 0,
-          hasError: true,
-        }),
-      );
-    }
+  const getSourceKey = useCallback((source: SearchResult) => {
+    return `${source.source}-${source.id}`;
   }, []);
 
-  // 当有预计算结果时，先合并到videoInfoMap中
+  const sourceListSignature = useMemo(
+    () => availableSources.map((source) => getSourceKey(source)).join('|'),
+    [availableSources, getSourceKey],
+  );
+  const autoSortScopeRef = useRef('');
+
   useEffect(() => {
-    if (precomputedVideoInfo && precomputedVideoInfo.size > 0) {
-      // 原子性地更新两个状态，避免时序问题
-      setVideoInfoMap((prev) => {
-        const newMap = new Map(prev);
-        precomputedVideoInfo.forEach((value, key) => {
-          newMap.set(key, value);
-        });
-        return newMap;
-      });
+    setSourceSortMode('default');
+    autoSortScopeRef.current = '';
+  }, [sourceListSignature, value]);
 
-      setAttemptedSources((prev) => {
-        const newSet = new Set(prev);
-        precomputedVideoInfo.forEach((info, key) => {
-          if (!info.hasError) {
-            newSet.add(key);
-          }
-        });
-        return newSet;
-      });
-
-      // 同步更新 ref，确保 getVideoInfo 能立即看到更新
-      precomputedVideoInfo.forEach((info, key) => {
-        if (!info.hasError) {
-          attemptedSourcesRef.current.add(key);
-        }
-      });
-    }
-  }, [precomputedVideoInfo]);
-
-  // 读取本地"优选和测速"开关，默认开启
-  const [optimizationEnabled] = useState<boolean>(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('enableOptimization');
-      if (saved !== null) {
-        try {
-          return JSON.parse(saved);
-        } catch {
-          /* ignore */
-        }
-      }
-    }
-    return true;
-  });
-
-  // 当切换到换源tab并且有源数据时，异步获取视频信息 - 移除 attemptedSources 依赖避免循环触发
-  useEffect(() => {
-    const fetchVideoInfosInBatches = async () => {
-      if (
-        !optimizationEnabled || // 若关闭测速则直接退出
-        activeTab !== 'sources' ||
-        availableSources.length === 0
-      )
-        return;
-
-      // 筛选出尚未测速的播放源
-      const pendingSources = availableSources.filter((source) => {
-        const sourceKey = `${source.source}-${source.id}`;
-        return !attemptedSourcesRef.current.has(sourceKey);
-      });
-
-      if (pendingSources.length === 0) return;
-
-      const batchSize = Math.ceil(pendingSources.length / 2);
-
-      for (let start = 0; start < pendingSources.length; start += batchSize) {
-        const batch = pendingSources.slice(start, start + batchSize);
-        await Promise.all(batch.map(getVideoInfo));
-      }
-    };
-
-    fetchVideoInfosInBatches();
-    // 依赖项保持与之前一致
-  }, [activeTab, availableSources, getVideoInfo, optimizationEnabled]);
+  const handleManualSpeedTest = useCallback(async () => {
+    if (availableSources.length === 0 || sourceProbeProgress.running) return;
+    setSourceSortMode('latency');
+    await onManualSpeedTest?.();
+  }, [availableSources.length, onManualSpeedTest, sourceProbeProgress.running]);
 
   // 升序分页标签
   const categoriesAsc = useMemo(() => {
@@ -353,6 +342,231 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
     currentStart + episodesPerPage - 1,
     totalEpisodes,
   );
+
+  const sourceItems = useMemo<SourceSortItem[]>(
+    () =>
+      availableSources.map((source, originalIndex) => {
+        const sourceKey = getSourceKey(source);
+        return {
+          source,
+          sourceKey,
+          originalIndex,
+          isCurrentSource:
+            source.source?.toString() === currentSource?.toString() &&
+            source.id?.toString() === currentId?.toString(),
+          isTesting: sourceTestingKeys.has(sourceKey),
+          videoInfo: sourceVideoInfoMap.get(sourceKey),
+        };
+      }),
+    [
+      availableSources,
+      currentId,
+      currentSource,
+      getSourceKey,
+      sourceTestingKeys,
+      sourceVideoInfoMap,
+    ],
+  );
+
+  const rankedLatencyItems = useMemo(
+    () =>
+      sourceItems
+        .filter((item) => isVerifiedPlaybackResult(item.videoInfo))
+        .sort(compareLatencyMetrics),
+    [sourceItems],
+  );
+
+  const latencyRankBySourceKey = useMemo(() => {
+    const ranks = new Map<string, number>();
+    rankedLatencyItems.forEach((item, index) => {
+      ranks.set(item.sourceKey, index + 1);
+    });
+    return ranks;
+  }, [rankedLatencyItems]);
+
+  const bestPlaybackItem = rankedLatencyItems[0] || null;
+
+  useEffect(() => {
+    const scopeKey = `${value}|${sourceListSignature}`;
+    if (
+      rankedLatencyItems.length > 0 &&
+      autoSortScopeRef.current !== scopeKey
+    ) {
+      autoSortScopeRef.current = scopeKey;
+      setSourceSortMode('latency');
+    }
+  }, [rankedLatencyItems.length, sourceListSignature, value]);
+
+  const testedSourceCount = useMemo(
+    () => sourceItems.filter((item) => Boolean(item.videoInfo)).length,
+    [sourceItems],
+  );
+
+  const failedSourceCount = useMemo(
+    () => sourceItems.filter((item) => item.videoInfo?.hasError).length,
+    [sourceItems],
+  );
+
+  const connectedSourceCount = useMemo(
+    () =>
+      sourceItems.filter(
+        (item) =>
+          item.videoInfo &&
+          !item.videoInfo.hasError &&
+          item.videoInfo.failureKind !== 'resolver' &&
+          item.videoInfo.failureKind !== 'timeout' &&
+          !(
+            item.videoInfo.failureKind === 'manifest' &&
+            !item.videoInfo.playable
+          ) &&
+          (item.videoInfo.status === 'partial' || item.videoInfo.pingTime > 0),
+      ).length,
+    [sourceItems],
+  );
+
+  const pendingSourceCount = useMemo(
+    () =>
+      sourceItems.filter(
+        (item) =>
+          item.videoInfo &&
+          !item.videoInfo.hasError &&
+          item.videoInfo.status === 'partial' &&
+          (item.videoInfo.failureKind === 'resolver' ||
+            item.videoInfo.failureKind === 'timeout' ||
+            (item.videoInfo.failureKind === 'manifest' &&
+              !item.videoInfo.playable)),
+      ).length,
+    [sourceItems],
+  );
+
+  const displaySourceItems = useMemo(() => {
+    const items = [...sourceItems];
+    items.sort(
+      sourceSortMode === 'latency'
+        ? compareLatencySourceOrder
+        : compareDefaultSourceOrder,
+    );
+    return items;
+  }, [sourceItems, sourceSortMode]);
+
+  const sourceSortStatusText = (() => {
+    if (sourceProbeProgress.running) {
+      const label =
+        sourceProbeProgress.mode === 'manual' ? '手动测速中' : '自动测速中';
+      return `${label} ${sourceProbeProgress.done}/${sourceProbeProgress.total}`;
+    }
+
+    if (sourceSortMode === 'latency') {
+      if (bestPlaybackItem?.videoInfo) {
+        const startupText =
+          typeof bestPlaybackItem.videoInfo.startupTimeMs === 'number'
+            ? `延迟 ${formatResponseTime(
+                bestPlaybackItem.videoInfo.startupTimeMs,
+              )}`
+            : `响应 ${formatResponseTime(bestPlaybackItem.videoInfo.pingTime)}`;
+        const speedText =
+          bestPlaybackItem.videoInfo.loadSpeed !== '未知'
+            ? ` · 速度 ${bestPlaybackItem.videoInfo.loadSpeed}`
+            : '';
+        return `最佳播放源 ${startupText}${speedText} · ${bestPlaybackItem.source.source_name}`;
+      }
+      if (connectedSourceCount > 0) {
+        return failedSourceCount > 0
+          ? `已连通 ${connectedSourceCount} 个源，部分源未完成分片测速`
+          : `已连通 ${connectedSourceCount} 个源，等待分片测速`;
+      }
+
+      if (pendingSourceCount > 0) {
+        return `${pendingSourceCount} 个源待播放验证`;
+      }
+
+      return failedSourceCount > 0
+        ? '测速完成，暂无可播放媒体样本'
+        : '等待首播数据';
+    }
+
+    if (
+      sourceProbeProgress.total > 0 &&
+      sourceProbeProgress.done >= sourceProbeProgress.total
+    ) {
+      return `已测速 ${testedSourceCount}/${availableSources.length}`;
+    }
+
+    return '正在自动测速，完成后按首播质量排序';
+  })();
+
+  const getSourceStatusBadge = (
+    videoInfo: VideoInfo | undefined,
+    isTesting: boolean,
+  ) => {
+    if (isTesting) {
+      return {
+        label: '检测中',
+        className: 'text-cyan-600 dark:text-cyan-300',
+      };
+    }
+
+    if (!videoInfo) return null;
+
+    if (videoInfo.hasError) {
+      return {
+        label: '检测失败',
+        className: 'text-red-600 dark:text-red-400',
+      };
+    }
+
+    if (videoInfo.status === 'partial') {
+      if (videoInfo.failureKind === 'resolver') {
+        return {
+          label: '待解析',
+          className: 'text-amber-600 dark:text-amber-300',
+        };
+      }
+
+      if (videoInfo.failureKind === 'timeout') {
+        return {
+          label: '待验证',
+          className: 'text-amber-600 dark:text-amber-300',
+        };
+      }
+
+      if (videoInfo.failureKind === 'manifest' && !videoInfo.playable) {
+        return {
+          label: '待验证',
+          className: 'text-amber-600 dark:text-amber-300',
+        };
+      }
+    }
+
+    if (videoInfo.quality && videoInfo.quality !== '未知') {
+      const isUltraHigh = ['4K', '2K'].includes(videoInfo.quality);
+      const isHigh = ['1080p', '720p'].includes(videoInfo.quality);
+      return {
+        label: videoInfo.quality,
+        className: isUltraHigh
+          ? 'text-purple-600 dark:text-purple-400'
+          : isHigh
+            ? 'text-green-600 dark:text-green-400'
+            : 'text-yellow-600 dark:text-yellow-400',
+      };
+    }
+
+    if (hasMeasuredMediaThroughput(videoInfo)) {
+      return {
+        label: '可播',
+        className: 'text-green-600 dark:text-green-400',
+      };
+    }
+
+    if (videoInfo.status === 'partial' || videoInfo.pingTime > 0) {
+      return {
+        label: '已连通',
+        className: 'text-sky-600 dark:text-sky-300',
+      };
+    }
+
+    return null;
+  };
 
   return (
     <div className='md:ml-2 px-4 py-0 h-full rounded-xl bg-black/10 dark:bg-white/5 flex flex-col border border-white/0 dark:border-white/30 overflow-hidden'>
@@ -527,26 +741,92 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
           {!sourceSearchLoading &&
             !sourceSearchError &&
             availableSources.length > 0 && (
-              <div className='flex-1 overflow-y-auto space-y-2 pb-20'>
-                {availableSources
-                  .sort((a, b) => {
-                    const aIsCurrent =
-                      a.source?.toString() === currentSource?.toString() &&
-                      a.id?.toString() === currentId?.toString();
-                    const bIsCurrent =
-                      b.source?.toString() === currentSource?.toString() &&
-                      b.id?.toString() === currentId?.toString();
-                    if (aIsCurrent && !bIsCurrent) return -1;
-                    if (!aIsCurrent && bIsCurrent) return 1;
-                    return 0;
-                  })
-                  .map((source, index) => {
-                    const isCurrentSource =
-                      source.source?.toString() === currentSource?.toString() &&
-                      source.id?.toString() === currentId?.toString();
+              <>
+                <div className='mb-3 rounded-lg border border-gray-300/70 bg-white/45 p-2 shadow-sm dark:border-white/10 dark:bg-white/5'>
+                  <div className='flex items-center justify-between gap-2'>
+                    <div className='flex min-w-0 items-center gap-2'>
+                      <span className='inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-500/12 text-emerald-600 dark:text-emerald-300'>
+                        <Gauge className='h-4 w-4' />
+                      </span>
+                      <div className='min-w-0'>
+                        <div className='text-xs font-medium text-gray-800 dark:text-gray-100'>
+                          源检测
+                        </div>
+                        <div className='truncate text-[11px] text-gray-500 dark:text-gray-400'>
+                          第 {value} 集 · {availableSources.length} 个源
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type='button'
+                      onClick={handleManualSpeedTest}
+                      disabled={sourceProbeProgress.running}
+                      className='inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-emerald-400/40 bg-emerald-500/10 px-3 text-xs font-medium text-emerald-700 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60 dark:text-emerald-200'
+                      title='手动重新检测全部播放源'
+                    >
+                      <RefreshCw
+                        className={`h-3.5 w-3.5 ${
+                          sourceProbeProgress.running ? 'animate-spin' : ''
+                        }`}
+                      />
+                      {sourceProbeProgress.running
+                        ? `${sourceProbeProgress.done}/${sourceProbeProgress.total}`
+                        : '手动测速'}
+                    </button>
+                  </div>
+                  <div className='mt-2 flex items-center justify-between gap-2 border-t border-gray-300/70 pt-2 dark:border-white/10'>
+                    <div className='inline-flex h-7 shrink-0 rounded-md bg-gray-200/70 p-0.5 dark:bg-black/20'>
+                      <button
+                        type='button'
+                        onClick={() => setSourceSortMode('default')}
+                        aria-pressed={sourceSortMode === 'default'}
+                        className={`rounded px-2.5 text-[11px] font-medium transition ${
+                          sourceSortMode === 'default'
+                            ? 'bg-white text-gray-900 shadow-sm dark:bg-white/15 dark:text-white'
+                            : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100'
+                        }`}
+                      >
+                        默认
+                      </button>
+                      <button
+                        type='button'
+                        onClick={() => setSourceSortMode('latency')}
+                        aria-pressed={sourceSortMode === 'latency'}
+                        className={`inline-flex items-center gap-1 rounded px-2.5 text-[11px] font-medium transition ${
+                          sourceSortMode === 'latency'
+                            ? 'bg-white text-emerald-700 shadow-sm dark:bg-white/15 dark:text-emerald-200'
+                            : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100'
+                        }`}
+                      >
+                        <ArrowDownNarrowWide className='h-3 w-3' />
+                        首播
+                      </button>
+                    </div>
+                    <div
+                      className='min-w-0 flex-1 truncate text-right text-[11px] text-gray-500 dark:text-gray-400'
+                      title={sourceSortStatusText}
+                    >
+                      {sourceSortStatusText}
+                    </div>
+                  </div>
+                </div>
+                <div className='flex-1 overflow-y-auto space-y-2 pb-20'>
+                  {displaySourceItems.map((item, index) => {
+                    const {
+                      source,
+                      sourceKey,
+                      isCurrentSource,
+                      isTesting,
+                      videoInfo,
+                    } = item;
+                    const latencyRank = latencyRankBySourceKey.get(sourceKey);
+                    const statusBadge = getSourceStatusBadge(
+                      videoInfo,
+                      isTesting,
+                    );
                     return (
                       <div
-                        key={`${source.source}-${source.id}`}
+                        key={sourceKey}
                         onClick={() =>
                           !isCurrentSource && handleSourceClick(source)
                         }
@@ -576,51 +856,34 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
                         <div className='flex-1 min-w-0 flex flex-col justify-between h-20'>
                           {/* 标题和分辨率 - 顶部 */}
                           <div className='flex items-start justify-between gap-3 h-6'>
-                            <div className='flex-1 min-w-0 relative group/title'>
-                              <h3 className='font-medium text-base truncate text-gray-900 dark:text-gray-100 leading-none'>
-                                {source.title}
-                              </h3>
-                              {/* 标题级别的 tooltip - 第一个元素不显示 */}
-                              {index !== 0 && (
-                                <div className='absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-1 bg-gray-800 text-white text-xs rounded-md shadow-lg opacity-0 invisible group-hover/title:opacity-100 group-hover/title:visible transition-all duration-200 ease-out delay-100 whitespace-nowrap z-500 pointer-events-none'>
-                                  {source.title}
-                                  <div className='absolute top-full left-1/2 transform -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-gray-800'></div>
-                                </div>
+                            <div className='flex min-w-0 flex-1 items-center gap-1.5'>
+                              {sourceSortMode === 'latency' && latencyRank && (
+                                <span className='inline-flex h-4 min-w-5 shrink-0 items-center justify-center rounded bg-emerald-500/10 px-1 text-[10px] font-semibold text-emerald-700 dark:text-emerald-200'>
+                                  #{latencyRank}
+                                </span>
                               )}
+                              <div className='min-w-0 flex-1 relative group/title'>
+                                <h3 className='font-medium text-base truncate text-gray-900 dark:text-gray-100 leading-none'>
+                                  {source.title}
+                                </h3>
+                                {/* 标题级别的 tooltip - 第一个元素不显示 */}
+                                {index !== 0 && (
+                                  <div className='absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-1 bg-gray-800 text-white text-xs rounded-md shadow-lg opacity-0 invisible group-hover/title:opacity-100 group-hover/title:visible transition-all duration-200 ease-out delay-100 whitespace-nowrap z-500 pointer-events-none'>
+                                    {source.title}
+                                    <div className='absolute top-full left-1/2 transform -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-gray-800'></div>
+                                  </div>
+                                )}
+                              </div>
                             </div>
                             {(() => {
-                              const sourceKey = `${source.source}-${source.id}`;
-                              const videoInfo = videoInfoMap.get(sourceKey);
-
-                              if (videoInfo && videoInfo.quality !== '未知') {
-                                if (videoInfo.hasError) {
-                                  return (
-                                    <div className='bg-gray-500/10 dark:bg-gray-400/20 text-red-600 dark:text-red-400 px-1.5 py-0 rounded text-xs shrink-0 min-w-12.5 text-center'>
-                                      检测失败
-                                    </div>
-                                  );
-                                } else {
-                                  // 根据分辨率设置不同颜色：2K、4K为紫色，1080p、720p为绿色，其他为黄色
-                                  const isUltraHigh = ['4K', '2K'].includes(
-                                    videoInfo.quality,
-                                  );
-                                  const isHigh = ['1080p', '720p'].includes(
-                                    videoInfo.quality,
-                                  );
-                                  const textColorClasses = isUltraHigh
-                                    ? 'text-purple-600 dark:text-purple-400'
-                                    : isHigh
-                                      ? 'text-green-600 dark:text-green-400'
-                                      : 'text-yellow-600 dark:text-yellow-400';
-
-                                  return (
-                                    <div
-                                      className={`bg-gray-500/10 dark:bg-gray-400/20 ${textColorClasses} px-1.5 py-0 rounded text-xs shrink-0 min-w-12.5 text-center`}
-                                    >
-                                      {videoInfo.quality}
-                                    </div>
-                                  );
-                                }
+                              if (statusBadge) {
+                                return (
+                                  <div
+                                    className={`bg-gray-500/10 dark:bg-gray-400/20 ${statusBadge.className} px-1.5 py-0 rounded text-xs shrink-0 min-w-12.5 text-center`}
+                                  >
+                                    {statusBadge.label}
+                                  </div>
+                                );
                               }
 
                               return null;
@@ -629,9 +892,16 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
 
                           {/* 源名称和集数信息 - 垂直居中 */}
                           <div className='flex items-center justify-between'>
-                            <span className='text-xs px-2 py-1 border border-gray-500/60 rounded text-gray-700 dark:text-gray-300'>
-                              {source.source_name}
-                            </span>
+                            <div className='flex min-w-0 items-center gap-1.5'>
+                              <span className='max-w-[8.5rem] truncate text-xs px-2 py-1 border border-gray-500/60 rounded text-gray-700 dark:text-gray-300'>
+                                {source.source_name}
+                              </span>
+                              {isCurrentSource && (
+                                <span className='shrink-0 rounded bg-green-500/12 px-1.5 py-0.5 text-[10px] font-medium text-green-700 dark:text-green-300'>
+                                  当前
+                                </span>
+                              )}
+                            </div>
                             {source.episodes.length > 1 && (
                               <span className='text-xs text-gray-500 dark:text-gray-400 font-medium'>
                                 {source.episodes.length} 集
@@ -642,49 +912,109 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
                           {/* 网络信息 - 底部 */}
                           <div className='flex items-end h-6'>
                             {(() => {
-                              const sourceKey = `${source.source}-${source.id}`;
-                              const videoInfo = videoInfoMap.get(sourceKey);
+                              if (isTesting) {
+                                return (
+                                  <div className='flex items-center gap-1.5 text-xs font-medium text-cyan-600 dark:text-cyan-300'>
+                                    <Wifi className='h-3 w-3' />
+                                    正在测速...
+                                  </div>
+                                );
+                              }
+
                               if (videoInfo) {
                                 if (!videoInfo.hasError) {
                                   return (
-                                    <div className='flex items-end gap-3 text-xs'>
-                                      <div className='text-green-600 dark:text-green-400 font-medium text-xs'>
-                                        {videoInfo.loadSpeed}
-                                      </div>
-                                      <div className='text-orange-600 dark:text-orange-400 font-medium text-xs'>
-                                        {videoInfo.pingTime}ms
-                                      </div>
+                                    <div className='flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs'>
+                                      {typeof videoInfo.startupTimeMs ===
+                                      'number' ? (
+                                        <div
+                                          className={`${getLatencyTextClassName(
+                                            videoInfo.startupTimeMs,
+                                          )} font-medium text-xs`}
+                                        >
+                                          延迟{' '}
+                                          {formatResponseTime(
+                                            videoInfo.startupTimeMs,
+                                          )}
+                                        </div>
+                                      ) : videoInfo.pingTime > 0 ? (
+                                        <div
+                                          className={`${getLatencyTextClassName(
+                                            videoInfo.pingTime,
+                                          )} font-medium text-xs`}
+                                        >
+                                          响应{' '}
+                                          {formatResponseTime(
+                                            videoInfo.pingTime,
+                                          )}
+                                        </div>
+                                      ) : null}
+                                      {videoInfo.loadSpeed !== '未知' ? (
+                                        <div
+                                          className={`${getSpeedTextClassName(
+                                            videoInfo.speedKBps,
+                                          )} font-medium text-xs`}
+                                        >
+                                          速度 {videoInfo.loadSpeed}
+                                        </div>
+                                      ) : videoInfo.message &&
+                                        (videoInfo.failureKind === 'resolver' ||
+                                          videoInfo.failureKind === 'timeout' ||
+                                          (videoInfo.failureKind ===
+                                            'manifest' &&
+                                            !videoInfo.playable) ||
+                                          !videoInfo.pingTime) ? (
+                                        <div
+                                          className='truncate text-amber-600 dark:text-amber-300 font-medium text-xs'
+                                          title={videoInfo.message}
+                                        >
+                                          {videoInfo.message}
+                                        </div>
+                                      ) : (
+                                        <div className='text-sky-600 dark:text-sky-300 font-medium text-xs'>
+                                          已连通，待分片测速
+                                        </div>
+                                      )}
                                     </div>
                                   );
                                 } else {
                                   return (
-                                    <div className='text-red-500/90 dark:text-red-400 font-medium text-xs'>
-                                      无测速数据
+                                    <div
+                                      className='text-red-500/90 dark:text-red-400 font-medium text-xs truncate'
+                                      title={videoInfo.message || '检测失败'}
+                                    >
+                                      {videoInfo.message || '检测失败'}
                                     </div>
-                                  ); // 占位div
+                                  );
                                 }
                               }
+                              return (
+                                <div className='text-gray-400 dark:text-gray-500 font-medium text-xs'>
+                                  待测速
+                                </div>
+                              );
                             })()}
                           </div>
                         </div>
                       </div>
                     );
                   })}
-                <div className='shrink-0 mt-auto pt-2 border-t border-gray-400 dark:border-gray-700'>
-                  <button
-                    onClick={() => {
-                      if (videoTitle) {
-                        router.push(
-                          `/search?q=${encodeURIComponent(videoTitle)}`,
-                        );
-                      }
-                    }}
-                    className='w-full text-center text-xs text-gray-500 dark:text-gray-400 hover:text-green-500 dark:hover:text-green-400 transition-colors py-2'
-                  >
-                    影片匹配有误？点击去搜索
-                  </button>
+                  <div className='shrink-0 mt-auto pt-2 border-t border-gray-400 dark:border-gray-700'>
+                    <button
+                      onClick={() => {
+                        if (videoTitle) {
+                          router.push(
+                            `/search?q=${encodeURIComponent(videoTitle)}`,
+                          );
+                        }
+                      }}
+                      className='w-full text-center text-xs text-gray-500 dark:text-gray-400 hover:text-green-500 dark:hover:text-green-400 transition-colors py-2'
+                    >
+                      影片匹配有误？点击去搜索
+                    </button>
+                  </div>
                 </div>
-              </div>
+              </>
             )}
         </div>
       )}

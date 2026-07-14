@@ -27,6 +27,7 @@ import {
   saveFavorite,
   subscribeToDataUpdates,
 } from '@/lib/db.client';
+import { applyDecoDockTheme } from '@/lib/player/decoArtplayerTheme';
 import { parseCustomTimeFormat } from '@/lib/time';
 
 import CategoryBar from '@/components/CategoryBar';
@@ -45,6 +46,7 @@ declare global {
 interface LiveChannel {
   id: string;
   tvgId: string;
+  tvgName?: string;
   name: string;
   logo: string;
   group: string;
@@ -89,10 +91,13 @@ interface ChannelHealthInfo {
 const RECENT_GROUPS_STORAGE_KEY = 'liveRecentGroups';
 const PINNED_GROUPS_STORAGE_KEY = 'livePinnedGroups';
 const AUTO_FAILOVER_STORAGE_KEY = 'liveAutoFailover';
+const LIVE_DIRECT_CONNECT_STORAGE_KEY = 'liveDirectConnect';
 const MAX_RECENT_GROUPS = 8;
 const HEALTH_CHECK_CACHE_MS = 3 * 60 * 1000;
 const HEALTH_CHECK_BATCH_SIZE = 12;
 const PLAYBACK_TIMEOUT_MS = 15 * 1000;
+const VIDEO_FRAME_TIMEOUT_MS = 7 * 1000;
+const HAVE_CURRENT_DATA = 2;
 
 function parseStoredStringArray(raw: string | null): string[] {
   if (!raw) return [];
@@ -196,6 +201,7 @@ function LivePageClient() {
   const [videoUrl, setVideoUrl] = useState('');
   const [isVideoLoading, setIsVideoLoading] = useState(false);
   const [unsupportedType, setUnsupportedType] = useState<string | null>(null);
+  const [playbackIssue, setPlaybackIssue] = useState<string | null>(null);
 
   // 切换直播源状态
   const [isSwitchingSource, setIsSwitchingSource] = useState(false);
@@ -254,7 +260,10 @@ function LivePageClient() {
   );
 
   // 直连模式状态
-  const [isDirectConnect, setIsDirectConnect] = useState(false);
+  const [isDirectConnect, setIsDirectConnect] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return localStorage.getItem(LIVE_DIRECT_CONNECT_STORAGE_KEY) === 'true';
+  });
   const [showDirectConnectTip, setShowDirectConnectTip] = useState(false);
 
   const normalizedChannelSearchQuery = channelSearchQuery.trim().toLowerCase();
@@ -503,6 +512,7 @@ function LivePageClient() {
   // 播放器引用
   const artPlayerRef = useRef<any>(null);
   const artRef = useRef<HTMLDivElement | null>(null);
+  const decoDockCleanupRef = useRef<(() => void) | null>(null);
   const flvLibRef = useRef<any>(null);
 
   // 频道列表引用
@@ -515,6 +525,10 @@ function LivePageClient() {
   const playbackWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
+  const videoFrameWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const videoFrameCleanupRef = useRef<(() => void) | null>(null);
 
   // -----------------------------------------------------------------------------
   // 工具函数（Utils）
@@ -525,6 +539,101 @@ function LivePageClient() {
       clearTimeout(playbackWatchdogRef.current);
       playbackWatchdogRef.current = null;
     }
+  };
+
+  const clearVideoFrameWatchdog = () => {
+    if (videoFrameWatchdogRef.current) {
+      clearTimeout(videoFrameWatchdogRef.current);
+      videoFrameWatchdogRef.current = null;
+    }
+  };
+
+  const cleanupVideoFrameMonitor = () => {
+    clearVideoFrameWatchdog();
+    if (videoFrameCleanupRef.current) {
+      videoFrameCleanupRef.current();
+      videoFrameCleanupRef.current = null;
+    }
+  };
+
+  const hasRenderableVideoFrame = (video: HTMLVideoElement | null) => {
+    return !!video && video.videoWidth > 0 && video.videoHeight > 0;
+  };
+
+  const setupVideoFrameMonitor = (
+    video: HTMLVideoElement | null,
+    type: LiveStreamType,
+  ) => {
+    if (!video) return;
+
+    cleanupVideoFrameMonitor();
+    let disposed = false;
+    let checkVideoFrame: () => Promise<void>;
+
+    const markFrameReady = () => {
+      if (disposed) return;
+      if (hasRenderableVideoFrame(video)) {
+        setPlaybackIssue(null);
+        clearVideoFrameWatchdog();
+      }
+    };
+
+    const scheduleCheck = () => {
+      if (disposed) return;
+      clearVideoFrameWatchdog();
+      videoFrameWatchdogRef.current = setTimeout(() => {
+        void checkVideoFrame();
+      }, VIDEO_FRAME_TIMEOUT_MS);
+    };
+
+    checkVideoFrame = async () => {
+      videoFrameWatchdogRef.current = null;
+      if (disposed || hasRenderableVideoFrame(video)) {
+        markFrameReady();
+        return;
+      }
+
+      if (video.readyState < HAVE_CURRENT_DATA) {
+        scheduleCheck();
+        return;
+      }
+
+      const reason = `${type.toUpperCase()} 未检测到视频画面`;
+      const switched = await attemptAutoFailover(reason);
+      if (!switched && !disposed && !hasRenderableVideoFrame(video)) {
+        setPlaybackIssue(
+          '当前线路没有可显示的视频画面，可能是纯音频源或视频编码不受当前浏览器支持。',
+        );
+        setIsVideoLoading(false);
+      }
+    };
+
+    const events = [
+      'loadedmetadata',
+      'loadeddata',
+      'canplay',
+      'playing',
+      'resize',
+    ] as const;
+    events.forEach((eventName) => {
+      video.addEventListener(eventName, markFrameReady);
+    });
+    video.addEventListener('loadstart', scheduleCheck);
+    video.addEventListener('waiting', scheduleCheck);
+
+    videoFrameCleanupRef.current = () => {
+      disposed = true;
+      clearVideoFrameWatchdog();
+      events.forEach((eventName) => {
+        video.removeEventListener(eventName, markFrameReady);
+      });
+      video.removeEventListener('loadstart', scheduleCheck);
+      video.removeEventListener('waiting', scheduleCheck);
+    };
+
+    setPlaybackIssue(null);
+    scheduleCheck();
+    markFrameReady();
   };
 
   const setChannelHealth = (channelId: string, info: ChannelHealthInfo) => {
@@ -554,6 +663,12 @@ function LivePageClient() {
     }
 
     const cacheKey = `${sourceKey}:${channel.url}`;
+    if (isDirectConnect) {
+      healthByUrlCacheRef.current[cacheKey] = fallbackInfo;
+      setChannelHealth(channel.id, fallbackInfo);
+      return fallbackInfo;
+    }
+
     const cachedInfo = healthByUrlCacheRef.current[cacheKey];
     if (
       !options?.force &&
@@ -751,7 +866,8 @@ function LivePageClient() {
       // 转换频道数据格式
       const channels: LiveChannel[] = channelsData.map((channel: any) => ({
         id: channel.id,
-        tvgId: channel.tvgId || channel.name,
+        tvgId: channel.tvgId || channel.tvgName || channel.name,
+        tvgName: channel.tvgName,
         name: channel.name,
         logo: channel.logo,
         group: channel.group || '其他',
@@ -980,9 +1096,17 @@ function LivePageClient() {
 
   // 清理播放器资源的统一函数
   const cleanupPlayer = () => {
+    // Clean up DecoDock theme before destroying the player
+    if (decoDockCleanupRef.current) {
+      decoDockCleanupRef.current();
+      decoDockCleanupRef.current = null;
+    }
+
     // 重置不支持的类型状态
     setUnsupportedType(null);
+    setPlaybackIssue(null);
     clearPlaybackWatchdog();
+    cleanupVideoFrameMonitor();
 
     if (artPlayerRef.current) {
       try {
@@ -1356,7 +1480,7 @@ function LivePageClient() {
   // 切换直连模式
   const handleDirectConnectToggle = (value: boolean) => {
     setIsDirectConnect(value);
-    localStorage.setItem('liveDirectConnect', JSON.stringify(value));
+    localStorage.setItem(LIVE_DIRECT_CONNECT_STORAGE_KEY, String(value));
     // 显示提示
     setShowDirectConnectTip(true);
     setTimeout(() => setShowDirectConnectTip(false), 5000);
@@ -1416,21 +1540,38 @@ function LivePageClient() {
     return flvLibRef.current;
   };
 
+  function isDecoProxyUrl(rawUrl: string) {
+    try {
+      const base =
+        typeof window !== 'undefined' ? window.location.href : 'http://local';
+      const parsed = new URL(rawUrl, base);
+      return (
+        typeof window !== 'undefined' &&
+        parsed.origin === window.location.origin &&
+        parsed.pathname.startsWith('/api/proxy/')
+      );
+    } catch {
+      return false;
+    }
+  }
+
   class CustomHlsJsLoader extends Hls.DefaultConfig.loader {
     constructor(config: any) {
       super(config);
       const load = this.load.bind(this);
       this.load = function (context: any, config: any, callbacks: any) {
-        // 所有的请求都带一个 source 参数
-        try {
-          const url = new URL(context.url);
-          url.searchParams.set(
-            'decotv-source',
-            currentSourceRef.current?.key || '',
-          );
-          context.url = url.toString();
-        } catch {
-          // ignore
+        // Only DecoTV proxy requests should receive DecoTV-specific params.
+        if (isDecoProxyUrl(context.url)) {
+          try {
+            const url = new URL(context.url, window.location.href);
+            url.searchParams.set(
+              'decotv-source',
+              currentSourceRef.current?.key || '',
+            );
+            context.url = url.toString();
+          } catch {
+            // ignore
+          }
         }
         // 拦截manifest和level请求
         if (
@@ -1438,10 +1579,11 @@ function LivePageClient() {
           (context as any).type === 'level'
         ) {
           // 判断是否浏览器直连
-          const isLiveDirectConnectStr =
-            localStorage.getItem('liveDirectConnect');
+          const isLiveDirectConnectStr = localStorage.getItem(
+            LIVE_DIRECT_CONNECT_STORAGE_KEY,
+          );
           const isLiveDirectConnect = isLiveDirectConnectStr === 'true';
-          if (isLiveDirectConnect) {
+          if (isLiveDirectConnect && isDecoProxyUrl(context.url)) {
             // 浏览器直连，使用 URL 对象处理参数
             try {
               const url = new URL(context.url);
@@ -1629,31 +1771,34 @@ function LivePageClient() {
       const precheckUrl = `/api/live/precheck?url=${encodedVideoUrl}&decotv-source=${sourceKey}`;
       let precheckLatencyMs: number | undefined;
       let precheckReachable = true;
+      const skipServerPrecheck = isDirectConnect;
 
-      try {
-        const precheckResponse = await fetch(precheckUrl, {
-          cache: 'no-store',
-        });
-        if (precheckResponse.ok) {
-          const precheckResult = await precheckResponse.json();
-          if (typeof precheckResult?.latencyMs === 'number') {
-            precheckLatencyMs = precheckResult.latencyMs;
-          }
-          if (precheckResult.success) {
-            const precheckedType = normalizeStreamType(precheckResult.type);
-            if (precheckedType !== 'unknown') {
-              type = precheckedType;
+      if (!skipServerPrecheck) {
+        try {
+          const precheckResponse = await fetch(precheckUrl, {
+            cache: 'no-store',
+          });
+          if (precheckResponse.ok) {
+            const precheckResult = await precheckResponse.json();
+            if (typeof precheckResult?.latencyMs === 'number') {
+              precheckLatencyMs = precheckResult.latencyMs;
+            }
+            if (precheckResult.success) {
+              const precheckedType = normalizeStreamType(precheckResult.type);
+              if (precheckedType !== 'unknown') {
+                type = precheckedType;
+              }
+            } else {
+              precheckReachable = false;
             }
           } else {
+            console.warn('预检查失败:', precheckResponse.statusText);
             precheckReachable = false;
           }
-        } else {
-          console.warn('预检查失败:', precheckResponse.statusText);
+        } catch (error) {
+          console.warn('预检查异常，回退到 URL 类型推断:', error);
           precheckReachable = false;
         }
-      } catch (error) {
-        console.warn('预检查异常，回退到 URL 类型推断:', error);
-        precheckReachable = false;
       }
 
       if (type === 'unknown') {
@@ -1662,10 +1807,13 @@ function LivePageClient() {
 
       const currentHealthInfo: ChannelHealthInfo = {
         type,
-        status: deriveHealthStatus(precheckReachable, precheckLatencyMs),
+        status: skipServerPrecheck
+          ? 'unknown'
+          : deriveHealthStatus(precheckReachable, precheckLatencyMs),
         latencyMs: precheckLatencyMs,
         checkedAt: Date.now(),
-        message: precheckReachable ? undefined : '预检查失败',
+        message:
+          skipServerPrecheck || precheckReachable ? undefined : '预检查失败',
       };
       setChannelHealth(currentChannel.id, currentHealthInfo);
       if (sourceKey) {
@@ -1695,6 +1843,7 @@ function LivePageClient() {
 
       // 重置不支持的类型
       setUnsupportedType(null);
+      setPlaybackIssue(null);
 
       const customType = {
         m3u8: m3u8Loader,
@@ -1702,19 +1851,13 @@ function LivePageClient() {
         flv: flvLoader,
       };
 
-      const targetUrl =
-        type === 'm3u8'
-          ? `/api/proxy/m3u8?url=${encodedVideoUrl}&decotv-source=${sourceKey}`
-          : type === 'flv'
-            ? `/api/proxy/stream?url=${encodedVideoUrl}&decotv-source=${sourceKey}`
-            : isDirectConnect
-              ? videoUrl
-              : `/api/proxy/stream?url=${encodedVideoUrl}&decotv-source=${sourceKey}`;
-
-      if (type === 'flv' && isDirectConnect) {
-        setAutoFailoverMessage('FLV 直播为保证稳定性已自动走代理播放');
-        setTimeout(() => setAutoFailoverMessage(null), 4000);
-      }
+      const proxyM3u8Url = `/api/proxy/m3u8?url=${encodedVideoUrl}&decotv-source=${sourceKey}`;
+      const proxyStreamUrl = `/api/proxy/stream?url=${encodedVideoUrl}&decotv-source=${sourceKey}`;
+      const targetUrl = isDirectConnect
+        ? videoUrl
+        : type === 'm3u8'
+          ? proxyM3u8Url
+          : proxyStreamUrl;
 
       try {
         // 创建新的播放器实例
@@ -1763,6 +1906,9 @@ function LivePageClient() {
           },
         });
 
+        // Apply DecoDock glassmorphism theme
+        decoDockCleanupRef.current = applyDecoDockTheme(artPlayerRef.current);
+
         const startPlaybackWatchdog = () => {
           clearPlaybackWatchdog();
           playbackWatchdogRef.current = setTimeout(() => {
@@ -1809,11 +1955,12 @@ function LivePageClient() {
           void attemptAutoFailover('播放器报错');
         });
 
-        if (artPlayerRef.current?.video && type !== 'flv') {
-          ensureVideoSource(
-            artPlayerRef.current.video as HTMLVideoElement,
-            targetUrl,
-          );
+        const playerVideo = artPlayerRef.current
+          ?.video as HTMLVideoElement | null;
+        setupVideoFrameMonitor(playerVideo, type);
+
+        if (playerVideo && type !== 'flv') {
+          ensureVideoSource(playerVideo, targetUrl);
         }
       } catch (err) {
         console.error('创建播放器失败:', err);
@@ -2320,6 +2467,26 @@ function LivePageClient() {
                 )}
 
                 {/* 视频加载蒙层 */}
+                {playbackIssue && !unsupportedType && (
+                  <div className='absolute inset-0 bg-black/92 rounded-xl overflow-hidden shadow-lg border border-white/0 dark:border-white/30 flex items-center justify-center z-550 transition-all duration-300'>
+                    <div className='text-center max-w-md mx-auto px-6'>
+                      <div className='space-y-4'>
+                        <h3 className='text-xl font-semibold text-white'>
+                          当前线路没有视频画面
+                        </h3>
+                        <div className='bg-amber-500/20 border border-amber-500/30 rounded-lg p-4'>
+                          <p className='text-amber-200 text-sm leading-6'>
+                            {playbackIssue}
+                          </p>
+                        </div>
+                        <p className='text-sm text-gray-300'>
+                          可以切换同名线路、其他分组，或使用支持该编码的浏览器/设备。
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {isVideoLoading && (
                   <div className='absolute inset-0 bg-black/90 rounded-xl overflow-hidden shadow-lg border border-white/0 dark:border-white/30 flex items-center justify-center z-500 transition-all duration-300'>
                     <div className='text-center max-w-md mx-auto px-6'>

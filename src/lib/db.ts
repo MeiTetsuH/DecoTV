@@ -43,11 +43,9 @@ function createStorage(): IStorage {
 // 延迟初始化存储实例，避免在 Next.js 构建阶段因缺少运行时环境变量而报错
 function getStorage(): IStorage {
   const globalKey = Symbol.for('__DECOTV_STORAGE_INSTANCE__');
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let instance: IStorage | undefined = (globalThis as any)[globalKey];
   if (!instance) {
     instance = createStorage();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (globalThis as any)[globalKey] = instance;
   }
   return instance;

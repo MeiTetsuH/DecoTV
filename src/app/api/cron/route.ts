@@ -10,14 +10,20 @@ import { refreshLiveChannels } from '@/lib/live';
 import { SearchResult } from '@/lib/types';
 
 export const runtime = 'nodejs';
-export const maxDuration = 30;
+export const maxDuration = 300;
 
 export async function GET(request: NextRequest) {
-  console.log(request.url);
+  const cronSecret = process.env.CRON_SECRET;
+  const authorization = request.headers.get('authorization');
+
+  if (!cronSecret || authorization !== `Bearer ${cronSecret}`) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   try {
     console.log('Cron job triggered:', new Date().toISOString());
 
-    cronJob();
+    await cronJob();
 
     return NextResponse.json({
       success: true,
