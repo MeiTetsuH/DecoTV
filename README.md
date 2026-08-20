@@ -117,12 +117,12 @@
 3. **Framework Preset** 选择 **Next.js**（⚠️ 重要，不要选 Other）
 4. 在 **Environment Variables** 中添加以下环境变量：
 
-| 变量名 | 值 | 说明 |
-|--------|-----|------|
-| `USERNAME` | 你的管理员用户名 | 必填 |
-| `PASSWORD` | 你的管理员密码 | 必填 |
-| `NEXT_PUBLIC_STORAGE_TYPE` | `upstash` | 必填 |
-| `NEXT_PUBLIC_SITE_NAME` | 你的站点名称 | 可选，默认 DecoTV |
+| 变量名                     | 值               | 说明              |
+| -------------------------- | ---------------- | ----------------- |
+| `USERNAME`                 | 你的管理员用户名 | 必填              |
+| `PASSWORD`                 | 你的管理员密码   | 必填              |
+| `NEXT_PUBLIC_STORAGE_TYPE` | `upstash`        | 必填              |
+| `NEXT_PUBLIC_SITE_NAME`    | 你的站点名称     | 可选，默认 DecoTV |
 
 5. 点击 **Deploy**
 
@@ -134,6 +134,7 @@
 4. **重新部署**一次使环境变量生效
 
 > 💡 也可以手动配置 Upstash 变量，支持以下任一组命名：
+>
 > - `KV_REST_API_URL` + `KV_REST_API_TOKEN`（Vercel 集成自动注入）
 > - `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`
 > - `UPSTASH_URL` + `UPSTASH_TOKEN`
@@ -148,8 +149,8 @@
 
 如果你只想快速体验，不需要多端同步功能，可以**不配置 Upstash**：
 
-| 变量名 | 值 |
-|--------|-----|
+| 变量名     | 值           |
+| ---------- | ------------ |
 | `PASSWORD` | 你的管理密码 |
 
 此模式下数据保存在浏览器的 localStorage 中，清除浏览器数据会丢失配置。
@@ -201,57 +202,57 @@
 
 ### 基础配置
 
-| 变量 | 说明 | 默认值 | 备注 |
-|------|------|--------|------|
-| `USERNAME` | 管理员账号 | — | Upstash 模式**必填** |
-| `PASSWORD` | 管理员密码 | — | **必填** |
-| `NEXT_PUBLIC_SITE_NAME` | 站点名称 | DecoTV | — |
-| `NEXT_PUBLIC_STORAGE_TYPE` | 存储类型 | localstorage | 推荐 `upstash` |
-| `SITE_BASE` | 站点 URL | — | 可选 |
-| `ANNOUNCEMENT` | 站点公告 | 默认免责声明 | 可选 |
+| 变量                       | 说明       | 默认值       | 备注                 |
+| -------------------------- | ---------- | ------------ | -------------------- |
+| `USERNAME`                 | 管理员账号 | —            | Upstash 模式**必填** |
+| `PASSWORD`                 | 管理员密码 | —            | **必填**             |
+| `NEXT_PUBLIC_SITE_NAME`    | 站点名称   | DecoTV       | —                    |
+| `NEXT_PUBLIC_STORAGE_TYPE` | 存储类型   | localstorage | 推荐 `upstash`       |
+| `SITE_BASE`                | 站点 URL   | —            | 可选                 |
+| `ANNOUNCEMENT`             | 站点公告   | 默认免责声明 | 可选                 |
 
 ### Upstash 存储配置
 
 使用 Vercel Upstash 集成会**自动注入**以下变量，无需手动配置：
 
-| 变量 | 说明 |
-|------|------|
-| `KV_REST_API_URL` | Upstash REST API 地址 |
+| 变量                | 说明                  |
+| ------------------- | --------------------- |
+| `KV_REST_API_URL`   | Upstash REST API 地址 |
 | `KV_REST_API_TOKEN` | Upstash REST API 令牌 |
 
 > 也支持 `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` 或 `UPSTASH_URL` / `UPSTASH_TOKEN`
 
 ### 用户注册配置
 
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `NEXT_PUBLIC_ENABLE_REGISTRATION` | 开启用户注册 | false |
-| `DEFAULT_REGISTRATION_GROUP` | 注册用户默认分组 | — |
+| 变量                              | 说明             | 默认值 |
+| --------------------------------- | ---------------- | ------ |
+| `NEXT_PUBLIC_ENABLE_REGISTRATION` | 开启用户注册     | false  |
+| `DEFAULT_REGISTRATION_GROUP`      | 注册用户默认分组 | —      |
 
 > ⚠️ 建议默认关闭注册，仅在需要时临时开启。
 
 ### 高级配置
 
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `NEXT_PUBLIC_SEARCH_MAX_PAGE` | 搜索最大页数 | 5 |
-| `NEXT_PUBLIC_DOUBAN_PROXY_TYPE` | 豆瓣数据源代理 | direct |
-| `NEXT_PUBLIC_DOUBAN_IMAGE_PROXY_TYPE` | 豆瓣图片代理 | direct |
-| `NEXT_PUBLIC_DISABLE_YELLOW_FILTER` | 关闭内容过滤 | false |
-| `NEXT_PUBLIC_FLUID_SEARCH` | 流式搜索 | true |
-| `TMDB_API_KEY` | TMDB API 密钥 | — |
-| `TMDB_PROXY` | TMDB 正向代理 | — |
-| `TMDB_REVERSE_PROXY` | TMDB 反向代理 | — |
+| 变量                                  | 说明           | 默认值 |
+| ------------------------------------- | -------------- | ------ |
+| `NEXT_PUBLIC_SEARCH_MAX_PAGE`         | 搜索最大页数   | 5      |
+| `NEXT_PUBLIC_DOUBAN_PROXY_TYPE`       | 豆瓣数据源代理 | direct |
+| `NEXT_PUBLIC_DOUBAN_IMAGE_PROXY_TYPE` | 豆瓣图片代理   | direct |
+| `NEXT_PUBLIC_DISABLE_YELLOW_FILTER`   | 关闭内容过滤   | false  |
+| `NEXT_PUBLIC_FLUID_SEARCH`            | 流式搜索       | true   |
+| `TMDB_API_KEY`                        | TMDB API 密钥  | —      |
+| `TMDB_PROXY`                          | TMDB 正向代理  | —      |
+| `TMDB_REVERSE_PROXY`                  | TMDB 反向代理  | —      |
 
 #### 豆瓣代理类型可选值
 
-| 值 | 说明 |
-|----|------|
-| `direct` | 服务器直连（默认） |
-| `cors-proxy-zwei` | Zwei CORS Proxy |
+| 值                      | 说明                 |
+| ----------------------- | -------------------- |
+| `direct`                | 服务器直连（默认）   |
+| `cors-proxy-zwei`       | Zwei CORS Proxy      |
 | `cmliussss-cdn-tencent` | CMLiussss 腾讯云 CDN |
-| `cmliussss-cdn-ali` | CMLiussss 阿里云 CDN |
-| `custom` | 自定义代理 |
+| `cmliussss-cdn-ali`     | CMLiussss 阿里云 CDN |
+| `custom`                | 自定义代理           |
 
 ### 弹幕功能
 
@@ -289,6 +290,7 @@
 本项目可配合 [OrionTV](https://github.com/zimplexing/OrionTV) 在 Android TV 上使用，支持播放记录与网页端同步。
 
 详细配置：
+
 - 📖 [OrionTV 使用指南](./docs/OrionTV使用指南.md)
 - 🔒 [成人内容过滤使用指南](./docs/成人内容过滤使用指南.md)
 
