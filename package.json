@@ -52,8 +52,7 @@
     "react-icons": "^5.7.0",
     "react-virtuoso": "^4.18.19",
     "tailwind-merge": "^2.6.1",
-    "vidstack": "^0.6.15",
-    "zod": "^3.25.76"
+    "vidstack": "^0.6.15"
   },
   "devDependencies": {
     "@commitlint/cli": "^16.3.0",
@@ -108,7 +107,8 @@
   },
   "pnpm": {
     "overrides": {
-      "@commitlint/is-ignored>semver": "^7.5.2"
+      "@commitlint/is-ignored>semver": "^7.5.2",
+      "eslint-plugin-react-hooks@7.1.1>zod": "4.6.7"
     }
   }
 }
